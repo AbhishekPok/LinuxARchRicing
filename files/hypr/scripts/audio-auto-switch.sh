@@ -1,75 +1,99 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 CARD="alsa_card.pci-0000_00_1f.3-platform-skl_hda_dsp_generic"
 
-SPEAKER_PROFILE="HiFi (HDMI1, HDMI2, HDMI3, Mic1, Mic2, Speaker)"
 HEADPHONE_PROFILE="HiFi (HDMI1, HDMI2, HDMI3, Headphones, Headset, Mic1)"
+SPEAKER_PROFILE="HiFi (HDMI1, HDMI2, HDMI3, Headset, Mic1, Speaker)"
 
-SPEAKER_SINK="alsa_output.pci-0000_00_1f.3-platform-skl_hda_dsp_generic.HiFi__Speaker__sink"
 HEADPHONE_SINK="alsa_output.pci-0000_00_1f.3-platform-skl_hda_dsp_generic.HiFi__Headphones__sink"
+SPEAKER_SINK="alsa_output.pci-0000_00_1f.3-platform-skl_hda_dsp_generic.HiFi__Speaker__sink"
 
 LAST_STATE=""
 
+notify_audio() {
+    notify-send -h string:x-canonical-private-synchronous:audio "$1" "$2" >/dev/null 2>&1 || true
+}
+
+sink_exists() {
+    pactl list sinks short 2>/dev/null | awk '{print $2}' | command grep -Fxq "$1"
+}
+
 get_bt_sink() {
-    pactl list sinks short 2>/dev/null | command grep "bluez" | awk '{print $2}' | head -1
+    pactl list sinks short 2>/dev/null | awk '/bluez/ {print $2; exit}'
+}
+
+headphones_available() {
+    pactl list cards 2>/dev/null | awk '
+        /\[Out\] Headphones:/ {found=1}
+        found && /availability group: Headphone Mic, available/ {print "yes"; exit}
+        found && /^\s*\[/ && !/\[Out\] Headphones:/ {found=0}
+    '
+}
+
+switch_to_sink() {
+    local sink="$1"
+    local volume="${2:-80%}"
+
+    if sink_exists "$sink"; then
+        pactl set-default-sink "$sink" >/dev/null 2>&1 || true
+        pactl set-sink-volume "$sink" "$volume" >/dev/null 2>&1 || true
+        pactl set-sink-mute "$sink" 0 >/dev/null 2>&1 || true
+        return 0
+    fi
+
+    return 1
 }
 
 switch_audio() {
-    BT_SINK=$(get_bt_sink)
+    local bt_sink
+    local hp_available
+    local current_state
 
-    # Priority: Bluetooth > Headphones > Speaker
-    if [ -n "$BT_SINK" ]; then
-        CURRENT_STATE="bluetooth"
+    bt_sink="$(get_bt_sink)"
 
-        if [ "$LAST_STATE" != "$CURRENT_STATE" ]; then
-            pactl set-default-sink "$BT_SINK"
-            pactl set-sink-volume "$BT_SINK" 80%
-            pactl set-sink-mute "$BT_SINK" 0
-            notify-send -h string:x-canonical-private-synchronous:audio "󰂱 Audio" "Switched to Bluetooth"
-            
-            LAST_STATE="$CURRENT_STATE"
+    # Priority 1: Bluetooth audio
+    if [ -n "$bt_sink" ]; then
+        current_state="bluetooth"
+
+        if [ "$LAST_STATE" != "$current_state" ]; then
+            switch_to_sink "$bt_sink" "80%" && notify_audio "󰂱 Audio" "Switched to Bluetooth"
+            LAST_STATE="$current_state"
         fi
+
         return
     fi
 
-    HEADPHONE_STATUS=$(pactl list cards | awk '
-        /\[Out\] Headphones:/ {found=1}
-        found && /availability/ {print; exit}
-    ')
+    hp_available="$(headphones_available)"
 
-    if echo "$HEADPHONE_STATUS" | /usr/bin/command grep -q "availability group: Headphone Mic, available"; then
-        CURRENT_STATE="headphones"
+    # Priority 2: Wired headset/headphones
+    if [ "$hp_available" = "yes" ]; then
+        current_state="headphones"
 
-        if [ "$LAST_STATE" != "$CURRENT_STATE" ]; then
-            pactl set-card-profile "$CARD" "$HEADPHONE_PROFILE"
-            sleep 1
-            pactl set-default-sink "$HEADPHONE_SINK"
-            pactl set-sink-volume "$HEADPHONE_SINK" 80%
-            pactl set-sink-mute "$HEADPHONE_SINK" 0
-            notify-send -h string:x-canonical-private-synchronous:audio "󰋋 Audio" "Switched to Headphones"
-            
-            LAST_STATE="$CURRENT_STATE"
+        if [ "$LAST_STATE" != "$current_state" ]; then
+            pactl set-card-profile "$CARD" "$HEADPHONE_PROFILE" >/dev/null 2>&1 || true
+            sleep 0.6
+            switch_to_sink "$HEADPHONE_SINK" "80%" && notify_audio "󰋋 Audio" "Switched to Headphones"
+            LAST_STATE="$current_state"
         fi
-    else
-        CURRENT_STATE="speaker"
 
-        if [ "$LAST_STATE" != "$CURRENT_STATE" ]; then
-            pactl set-card-profile "$CARD" "$SPEAKER_PROFILE"
-            sleep 1
-            pactl set-default-sink "$SPEAKER_SINK"
-            pactl set-sink-volume "$SPEAKER_SINK" 80%
-            pactl set-sink-mute "$SPEAKER_SINK" 0
-            notify-send -h string:x-canonical-private-synchronous:audio "󰕾 Audio" "Switched to Speaker"
-            
-            LAST_STATE="$CURRENT_STATE"
-        fi
+        return
+    fi
+
+    # Priority 3: Laptop speaker
+    current_state="speaker"
+
+    if [ "$LAST_STATE" != "$current_state" ]; then
+        pactl set-card-profile "$CARD" "$SPEAKER_PROFILE" >/dev/null 2>&1 || true
+        sleep 0.6
+        switch_to_sink "$SPEAKER_SINK" "80%" && notify_audio "󰕾 Audio" "Switched to Speaker"
+        LAST_STATE="$current_state"
     fi
 }
 
 switch_audio
 
-pactl subscribe | while read -r event; do
-    if echo "$event" | /usr/bin/command grep -q -E "card|sink"; then
+pactl subscribe 2>/dev/null | while read -r event; do
+    if echo "$event" | command grep -qE "card|sink|server"; then
         sleep 0.5
         switch_audio
     fi
