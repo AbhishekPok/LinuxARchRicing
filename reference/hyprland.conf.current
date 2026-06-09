@@ -78,7 +78,6 @@ exec-once = sleep 2 && ydotool key 70:1 70:0
 
 # ===== AUTOSTART =====
 exec-once = waybar
-exec-once = mako
 exec-once = /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1
 exec-once = hyprexpose 
 # Clipboard manager
@@ -413,3 +412,6 @@ windowrule {
 source = ~/.config/hypr/conf/keybinds-devops.conf
 source = ~/.config/hypr/conf/windowrules-utility.conf
 
+
+# Notification daemon
+exec-once = swaync
