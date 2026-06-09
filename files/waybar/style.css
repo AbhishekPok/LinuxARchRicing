@@ -1,0 +1,307 @@
+/* ============================================================
+   WAYBAR DEVOPS COMMAND BAR
+   Arch Linux / Hyprland / Catppuccin Mocha Inspired
+   ============================================================ */
+
+* {
+    border: none;
+    border-radius: 0;
+    font-family: "JetBrainsMono Nerd Font", "JetBrains Mono", "Font Awesome 6 Free", sans-serif;
+    font-size: 13px;
+    min-height: 0;
+}
+
+window#waybar {
+    background: transparent;
+    color: #cdd6f4;
+}
+
+window#waybar.hidden {
+    opacity: 0.2;
+}
+
+/* ---- Main module containers ---- */
+
+.modules-left,
+.modules-center,
+.modules-right {
+    background: rgba(17, 17, 27, 0.78);
+    border: 1px solid rgba(69, 71, 90, 0.65);
+    border-radius: 14px;
+    padding: 0 6px;
+    margin: 0 4px;
+}
+
+/* ---- Workspaces ---- */
+
+#workspaces {
+    padding: 0 4px;
+    margin: 4px 0;
+    background: transparent;
+}
+
+#workspaces button {
+    color: #a6adc8;
+    background: transparent;
+    padding: 0 8px;
+    margin: 2px 2px;
+    border-radius: 10px;
+    transition: all 0.2s ease;
+}
+
+#workspaces button:hover {
+    color: #cdd6f4;
+    background: rgba(137, 180, 250, 0.20);
+}
+
+#workspaces button.active {
+    color: #1e1e2e;
+    background: #89b4fa;
+    border-radius: 10px;
+}
+
+#workspaces button.urgent {
+    color: #1e1e2e;
+    background: #f38ba8;
+}
+
+/* ---- Active Window ---- */
+
+#window {
+    color: #cdd6f4;
+    padding: 0 12px;
+    margin: 4px 4px;
+    border-radius: 10px;
+    background: rgba(49, 50, 68, 0.45);
+}
+
+/* ---- Clock ---- */
+
+#clock {
+    color: #f9e2af;
+    padding: 0 14px;
+    margin: 4px 4px;
+    border-radius: 10px;
+    background: rgba(49, 50, 68, 0.65);
+    font-weight: 600;
+}
+
+/* ---- Shared right modules ---- */
+
+#custom-updates,
+#custom-docker,
+#custom-kube,
+#custom-vpn,
+#custom-public-ip,
+#cpu,
+#memory,
+#disk,
+#network,
+#pulseaudio,
+#backlight,
+#battery,
+#tray {
+    padding: 0 10px;
+    margin: 4px 3px;
+    border-radius: 10px;
+    background: rgba(49, 50, 68, 0.60);
+    color: #cdd6f4;
+    transition: all 0.2s ease;
+}
+
+#custom-updates:hover,
+#custom-docker:hover,
+#custom-kube:hover,
+#custom-vpn:hover,
+#custom-public-ip:hover,
+#cpu:hover,
+#memory:hover,
+#disk:hover,
+#network:hover,
+#pulseaudio:hover,
+#backlight:hover,
+#battery:hover,
+#tray:hover {
+    background: rgba(137, 180, 250, 0.25);
+    color: #ffffff;
+}
+
+/* ---- DevOps modules ---- */
+
+#custom-updates {
+    color: #f9e2af;
+}
+
+#custom-docker {
+    color: #89b4fa;
+}
+
+#custom-kube {
+    color: #74c7ec;
+}
+
+#custom-vpn {
+    color: #a6e3a1;
+}
+
+#custom-public-ip {
+    color: #fab387;
+}
+
+/* ---- System modules ---- */
+
+#cpu {
+    color: #fab387;
+}
+
+#memory {
+    color: #cba6f7;
+}
+
+#disk {
+    color: #f38ba8;
+}
+
+#network {
+    color: #89dceb;
+}
+
+#network.disconnected {
+    color: #f38ba8;
+    background: rgba(243, 139, 168, 0.18);
+}
+
+#pulseaudio {
+    color: #a6e3a1;
+}
+
+#pulseaudio.muted {
+    color: #f38ba8;
+    background: rgba(243, 139, 168, 0.18);
+}
+
+#backlight {
+    color: #f9e2af;
+}
+
+#battery {
+    color: #a6e3a1;
+}
+
+#battery.warning:not(.charging) {
+    color: #f9e2af;
+    background: rgba(249, 226, 175, 0.15);
+}
+
+#battery.critical:not(.charging) {
+    color: #f38ba8;
+    background: rgba(243, 139, 168, 0.20);
+    animation-name: pulse;
+    animation-duration: 1s;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+}
+
+/* ---- Tray ---- */
+
+#tray {
+    padding: 0 8px;
+}
+
+#tray > .passive {
+    -gtk-icon-effect: dim;
+}
+
+#tray > .needs-attention {
+    -gtk-icon-effect: highlight;
+}
+
+/* ---- Power button ---- */
+
+#custom-power {
+    color: #f38ba8;
+    padding: 0 12px;
+    margin: 4px 6px 4px 3px;
+    border-radius: 10px;
+    background: rgba(49, 50, 68, 0.60);
+    font-size: 15px;
+    transition: all 0.2s ease;
+}
+
+#custom-power:hover {
+    color: #1e1e2e;
+    background: #f38ba8;
+}
+
+/* ---- Tooltip ---- */
+
+tooltip {
+    background: rgba(17, 17, 27, 0.96);
+    border: 1px solid rgba(69, 71, 90, 0.85);
+    border-radius: 10px;
+    padding: 8px 12px;
+    color: #cdd6f4;
+}
+
+tooltip label {
+    color: #cdd6f4;
+    font-size: 12px;
+}
+
+/* ---- Animations ---- */
+
+@keyframes pulse {
+    0% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.45;
+    }
+
+    100% {
+        opacity: 1;
+    }
+}
+
+/* ---- Bluetooth ---- */
+
+#bluetooth {
+    padding: 0 10px;
+    margin: 4px 3px;
+    border-radius: 10px;
+    background: rgba(49, 50, 68, 0.60);
+    color: #89b4fa;
+    transition: all 0.2s ease;
+}
+
+#bluetooth:hover {
+    background: rgba(137, 180, 250, 0.25);
+    color: #ffffff;
+}
+
+#bluetooth.disabled,
+#bluetooth.off {
+    color: #f38ba8;
+    background: rgba(243, 139, 168, 0.18);
+}
+
+#bluetooth.connected {
+    color: #a6e3a1;
+}
+
+/* ---- SwayNC Notifications ---- */
+
+#custom-notifications {
+    padding: 0 10px;
+    margin: 0 3px;
+    border-radius: 10px;
+    background: rgba(49, 50, 68, 0.60);
+    color: #cba6f7;
+    transition: all 0.2s ease;
+}
+
+#custom-notifications:hover {
+    background: rgba(203, 166, 247, 0.25);
+    color: #ffffff;
+}

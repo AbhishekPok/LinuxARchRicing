@@ -1,0 +1,80 @@
+/* ============================================================
+   Wlogout DevOps Command Center - Polished Compact SVG Version
+   ============================================================ */
+
+* {
+    font-family: "JetBrainsMono Nerd Font", "JetBrains Mono", sans-serif;
+    background-image: none;
+    box-shadow: none;
+}
+
+window {
+    background-color: rgba(17, 17, 27, 0.52);
+}
+
+button {
+    color: #cdd6f4;
+    background-color: rgba(30, 30, 46, 0.96);
+    border: 1px solid rgba(69, 71, 90, 0.9);
+    border-radius: 18px;
+
+    /* outer spacing between buttons */
+    margin: 8px;
+
+    /* top padding creates room for icon */
+    padding: 78px 18px 18px 18px;
+
+    /* compact but comfortable size */
+    min-width: 145px;
+    min-height: 105px;
+
+    font-size: 13px;
+    font-weight: 800;
+
+    background-repeat: no-repeat;
+
+    /* icon position */
+    background-position: center 24px;
+
+    /* icon size increased */
+    background-size: 48px;
+
+    transition: all 150ms ease;
+}
+
+button:hover,
+button:focus {
+    background-color: rgba(49, 50, 68, 0.98);
+    border: 1px solid #89b4fa;
+    color: #ffffff;
+}
+
+#lock {
+    color: #89b4fa;
+    background-image: url("/home/abhi/.config/wlogout/icons/lock.svg");
+}
+
+#logout {
+    color: #cba6f7;
+    background-image: url("/home/abhi/.config/wlogout/icons/logout.svg");
+}
+
+#suspend {
+    color: #f9e2af;
+    background-image: url("/home/abhi/.config/wlogout/icons/suspend.svg");
+}
+
+#hibernate {
+    color: #fab387;
+    background-image: url("/home/abhi/.config/wlogout/icons/hibernate.svg");
+}
+
+#reboot {
+    color: #74c7ec;
+    background-image: url("/home/abhi/.config/wlogout/icons/reboot.svg");
+}
+
+#shutdown {
+    color: #f38ba8;
+    background-image: url("/home/abhi/.config/wlogout/icons/shutdown.svg");
+}

@@ -1,0 +1,177 @@
+/* ============================================================
+   SwayNC DevOps Dark Command Center
+   Catppuccin Mocha Inspired
+   ============================================================ */
+
+* {
+  font-family: "JetBrainsMono Nerd Font", "JetBrains Mono", sans-serif;
+  font-size: 13px;
+  border: none;
+  outline: none;
+}
+
+/* Main notification center */
+.control-center {
+  background: rgba(17, 17, 27, 0.92);
+  border: 1px solid rgba(69, 71, 90, 0.85);
+  border-radius: 16px;
+  padding: 12px;
+  color: #cdd6f4;
+}
+
+/* Notification popup window */
+.notification-row {
+  outline: none;
+}
+
+.notification-row:focus,
+.notification-row:hover {
+  background: transparent;
+}
+
+.notification {
+  background: rgba(30, 30, 46, 0.94);
+  border: 1px solid rgba(137, 180, 250, 0.55);
+  border-radius: 14px;
+  padding: 10px;
+  margin: 8px;
+  color: #cdd6f4;
+}
+
+.notification:hover {
+  background: rgba(49, 50, 68, 0.96);
+  border-color: #89b4fa;
+}
+
+/* Notification text */
+.summary {
+  color: #cdd6f4;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.body {
+  color: #a6adc8;
+  font-size: 12px;
+}
+
+.time {
+  color: #6c7086;
+  font-size: 11px;
+}
+
+/* App icon */
+.notification-content image {
+  margin-right: 10px;
+}
+
+/* Close button */
+.close-button {
+  background: #f38ba8;
+  color: #1e1e2e;
+  border-radius: 999px;
+  min-width: 22px;
+  min-height: 22px;
+  margin: 4px;
+}
+
+.close-button:hover {
+  background: #eba0ac;
+}
+
+/* Title widget */
+.widget-title {
+  color: #cdd6f4;
+  margin: 8px;
+  padding: 8px;
+}
+
+.widget-title > label {
+  color: #cdd6f4;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.widget-title > button {
+  background: rgba(243, 139, 168, 0.18);
+  color: #f38ba8;
+  border-radius: 10px;
+  padding: 6px 10px;
+}
+
+.widget-title > button:hover {
+  background: #f38ba8;
+  color: #1e1e2e;
+}
+
+/* DND widget */
+.widget-dnd {
+  margin: 8px;
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(49, 50, 68, 0.55);
+  color: #cdd6f4;
+}
+
+.widget-dnd > label {
+  color: #cdd6f4;
+  font-weight: 600;
+}
+
+/* DND switch */
+.widget-dnd switch {
+  background: rgba(69, 71, 90, 0.9);
+  border-radius: 999px;
+}
+
+.widget-dnd switch:checked {
+  background: #89b4fa;
+}
+
+.widget-dnd switch slider {
+  background: #cdd6f4;
+  border-radius: 999px;
+}
+
+/* Notification group area */
+.notification-group {
+  background: transparent;
+}
+
+.notification-group-headers {
+  color: #89b4fa;
+  font-weight: 700;
+}
+
+/* Buttons/actions inside notifications */
+.notification-action {
+  background: rgba(137, 180, 250, 0.18);
+  color: #89b4fa;
+  border-radius: 10px;
+  padding: 6px 10px;
+  margin: 4px;
+}
+
+.notification-action:hover {
+  background: #89b4fa;
+  color: #1e1e2e;
+}
+
+/* Blank state */
+.blank-window {
+  background: transparent;
+}
+
+.blank-window label {
+  color: #a6adc8;
+}
+
+/* Critical notifications */
+.notification.critical {
+  border-color: #f38ba8;
+  background: rgba(243, 139, 168, 0.14);
+}
+
+.notification.critical .summary {
+  color: #f38ba8;
+}
