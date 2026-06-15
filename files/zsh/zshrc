@@ -1,0 +1,233 @@
+# ============================================================
+# Kali-style Zsh Setup for Arch Linux
+# ============================================================
+
+# -----------------------------
+# History
+# -----------------------------
+HISTFILE="$HOME/.zsh_history"
+HISTSIZE=10000
+SAVEHIST=10000
+
+setopt HIST_IGNORE_DUPS
+setopt HIST_IGNORE_SPACE
+setopt SHARE_HISTORY
+setopt APPEND_HISTORY
+setopt INC_APPEND_HISTORY
+setopt EXTENDED_HISTORY
+
+# -----------------------------
+# Completion
+# -----------------------------
+autoload -Uz compinit
+compinit
+
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
+zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
+
+# -----------------------------
+# Keybinds
+# -----------------------------
+bindkey -e
+
+# Ctrl + Arrow word movement
+bindkey '^[[1;5D' backward-word
+bindkey '^[[1;5C' forward-word
+bindkey '^[[5D' backward-word
+bindkey '^[[5C' forward-word
+
+# Ctrl + Backspace delete word
+bindkey '^H' backward-kill-word
+bindkey '^?' backward-delete-char
+
+# Delete
+bindkey '^[[3~' delete-char
+
+# Default reverse search
+bindkey '^R' history-incremental-search-backward
+
+# -----------------------------
+# Colors
+# -----------------------------
+autoload -Uz colors && colors
+
+# -----------------------------
+# Git branch helper
+# -----------------------------
+git_branch() {
+    local branch
+    branch="$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)"
+    [ -n "$branch" ] && echo " git:($branch)"
+}
+
+# -----------------------------
+# Prompt
+# Kali-like two-line prompt
+# -----------------------------
+setopt PROMPT_SUBST
+
+if [ "$EUID" -eq 0 ]; then
+    USER_COLOR="%F{196}"
+    PROMPT_SYMBOL="#"
+else
+    USER_COLOR="%F{51}"
+    PROMPT_SYMBOL="$"
+fi
+
+PROMPT='┌──(${USER_COLOR}%n㉿%m%f)-[%F{48}%~%f%F{201}$(git_branch)%f]
+└─%F{46}${PROMPT_SYMBOL}%f '
+
+RPROMPT='%(?..%F{red}✘ %?%f)'
+
+
+# -----------------------------
+if command -v eza >/dev/null 2>&1; then
+    alias ls='eza --icons --color=always --group-directories-first'
+    alias ll='eza -lah --icons --color=always --group-directories-first'
+    alias la='eza -a --icons --color=always --group-directories-first'
+    alias lt='eza --tree --level=2 --icons --color=always'
+else
+    alias ls='ls --color=auto'
+    alias ll='ls -lah --color=auto'
+    alias la='ls -A --color=auto'
+fi
+
+# -----------------------------
+# Useful aliases
+# -----------------------------
+alias grep='grep --color=auto'
+alias ip='ip --color=auto'
+alias cls='clear'
+alias c='clear'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ....='cd ../../..'
+
+alias mkdir='mkdir -pv'
+alias cp='cp -iv'
+alias mv='mv -iv'
+alias rm='rm -Iv'
+
+# System
+alias update='sudo pacman -Syu'
+alias cleanup='sudo pacman -Rns $(pacman -Qtdq)'
+alias ports='ss -tulpn'
+alias myip='curl -s ifconfig.me && echo'
+alias path='echo $PATH | tr ":" "\n"'
+
+# Git
+alias g='git'
+alias gs='git status'
+alias ga='git add'
+alias gaa='git add .'
+alias gc='git commit -m'
+alias gp='git push'
+alias gl='git log --oneline --graph --decorate --all'
+alias gd='git diff'
+
+# DevOps
+alias k='kubectl'
+alias d='docker'
+alias dc='docker compose'
+alias tf='terraform'
+alias lg='lazygit'
+alias aws-login='aws sso login'
+alias aws-who='aws sts get-caller-identity'
+
+# Config quick open
+alias zshrc='nano ~/.zshrc && source ~/.zshrc'
+alias hyprconf='nano ~/.config/hypr/hyprland.conf'
+alias waybarconf='nano ~/.config/waybar/config.jsonc'
+alias waybarcss='nano ~/.config/waybar/style.css'
+
+# SSH fix
+alias ssh='TERM=xterm-256color ssh'
+
+# Open file manager
+alias open='nautilus'
+
+
+# -----------------------------
+# FZF helpers
+# -----------------------------
+fzf-browse() {
+    local dir
+    dir="$(find . -type d 2>/dev/null | fzf --height 40% --border --prompt='cd > ')"
+    [ -n "$dir" ] && cd "$dir"
+}
+
+fh() {
+    print -z "$(history 1 | fzf --height 40% --border | sed 's/^[ ]*[0-9]*[ ]*//')"
+}
+
+# -----------------------------
+# Fast ls / directory navigation
+# -----------------------------
+# Keep normal ls fast. Use ll/la/lt for pretty eza output.
+alias ls='command ls --color=auto -F'
+alias l='command ls --color=auto -F'
+
+if command -v eza >/dev/null 2>&1; then
+    alias ll='eza -lah --group-directories-first --color=always'
+    alias la='eza -lah --group-directories-first --color=always'
+    alias lt='eza --tree --level=2 --group-directories-first --color=always'
+else
+    alias ll='command ls -lah --color=auto'
+    alias la='command ls -lah --color=auto'
+    alias lt='command find . -maxdepth 2 -type d'
+fi
+
+# Keep cd normal
+unalias cd 2>/dev/null
+
+# cd + list only when explicitly needed
+cl() {
+    builtin cd "$@" && ls
+}
+
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ....='cd ../../..'
+
+# fzf directory jump
+unalias fcd 2>/dev/null
+
+fcd() {
+    local dir
+    dir="$(command find . -type d 2>/dev/null | fzf --height 40% --border --prompt='cd > ')"
+    [ -n "$dir" ] && builtin cd "$dir"
+}
+
+
+# -----------------------------
+# Plugins
+# -----------------------------
+if [ -f /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh ]; then
+    source /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh
+fi
+
+if [ -f /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]; then
+    source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+fi
+
+# -----------------------------
+# Autosuggestion color
+# -----------------------------
+ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'
+
+
+
+
+# -----------------------------
+unalias cd 2>/dev/null
+
+# cd + list only when explicitly needed
+cl() {
+    builtin cd "$@" && ls
+}
+
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ....='cd ../../..'
+
