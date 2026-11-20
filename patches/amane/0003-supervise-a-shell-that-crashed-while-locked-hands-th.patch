@@ -1,0 +1,57 @@
+From f00b28394b10e75ef2e7fb015e7bdeb10bab4e42 Mon Sep 17 00:00:00 2001
+From: AbhishekPok <abhishekpokhrel001@gmail.com>
+Date: Thu, 12 Nov 2026 17:49:07 +0545
+Subject: [PATCH 3/4] supervise: a shell that crashed while locked hands the
+ session to hyprlock
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ cli/src/run.rs | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/cli/src/run.rs b/cli/src/run.rs
+index e54cb60..bd6c839 100644
+--- a/cli/src/run.rs
++++ b/cli/src/run.rs
+@@ -102,6 +102,12 @@ pub fn supervise() -> ExitCode {
+             return ExitCode::SUCCESS;
+         }
+ 
++        // died while the screen was locked: Hyprland now shows "lock screen
++        // app died" and a restarted shell won't lock again by itself, so hand
++        // the session to hyprlock first (the shell's freeze watchdog does the
++        // same); misc.allow_session_lock_restore lets it take over
++        relock_if_needed();
++
+         let now = Instant::now();
+         crashes.retain(|t| now.duration_since(*t) < CRASH_WINDOW);
+         crashes.push(now);
+@@ -154,3 +160,25 @@ fn note(message: &str) {
+         let _ = writeln!(file, "{message}");
+     }
+ }
++
++// the shell writes this when it locks and removes it once unlocked
++fn relock_if_needed() {
++    let Some(home) = std::env::var_os("HOME") else {
++        return;
++    };
++    let marker = PathBuf::from(home).join(".cache/amane/locked");
++    if !marker.exists() {
++        return;
++    }
++    let started = Command::new("hyprlock")
++        .process_group(0)
++        .stdin(Stdio::null())
++        .stdout(Stdio::null())
++        .stderr(Stdio::null())
++        .spawn();
++    let _ = fs::remove_file(&marker);
++    note(match started {
++        Ok(_) => "amane: crashed while locked, started hyprlock to keep the session locked",
++        Err(_) => "amane: crashed while locked and hyprlock could not start",
++    });
++}
+-- 
+2.56.1
+

@@ -1,0 +1,315 @@
+From e4ade304659f4941a6b8cb9b126aee65b1d8e400 Mon Sep 17 00:00:00 2001
+From: AbhishekPok <abhishekpokhrel001@gmail.com>
+Date: Tue, 17 Nov 2026 10:31:50 +0545
+Subject: [PATCH 4/4] Idle services back off: 200 ms poll after 5 s quiet,
+ NetworkManager link-only every 5 s
+
+Service::listen backs off when nothing has written for 5 s; input, IPC and
+dbus writes plus wake_pollers() (Workspaces, Audio) wake it again. Listener
+threads are flagged so periodic listeners don't keep every poller awake.
+Network polls link state every 5 s and fetches the AP list only while it
+was read in the last 30 s (NetworkManager CPU down ~90%).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/services.rs            | 91 ++++++++++++++++++++++++++++++++++++--
+ src/services/audio.rs      |  7 +++
+ src/services/network.rs    | 56 +++++++++++++++++++----
+ src/services/store.rs      |  2 +
+ src/services/workspaces.rs |  5 +++
+ src/services/write.rs      |  2 +
+ 6 files changed, 151 insertions(+), 12 deletions(-)
+
+diff --git a/src/services.rs b/src/services.rs
+index e7dc56e..668c41c 100644
+--- a/src/services.rs
++++ b/src/services.rs
+@@ -18,9 +18,10 @@ mod workspaces;
+ mod write;
+ 
+ use std::any::TypeId;
++use std::cell::Cell;
++use std::sync::{Condvar, Mutex, PoisonError};
++use std::time::{Duration, Instant};
+ use parking_lot::RwLockReadGuard;
+-use std::thread;
+-use std::time::Duration;
+ 
+ use crate::changes;
+ 
+@@ -59,14 +60,36 @@ pub trait Service: Send + Sync + Sized + 'static {
+      * own loop, and services that only change through input with
+      * an empty one
+      */
++    /*
++     * polls at interval() for a while after anything happens, then backs
++     * off to IDLE_POLL so a settled shell isn't waking the cpu 30-60 times
++     * a second for nothing; input, an event-driven service or this
++     * service's own change brings the fast rate straight back
++     */
+     fn listen() {
++        let mut seen = activity_generation();
++        let mut busy_until = Instant::now() + BUSY_FOR;
++
+         loop {
+-            thread::sleep(Self::interval());
++            let fast = Self::interval();
++
++            if Instant::now() < busy_until || fast >= IDLE_POLL {
++                std::thread::sleep(fast);
++            } else if wait_for_activity(IDLE_POLL, &mut seen) {
++                busy_until = Instant::now() + BUSY_FOR;
++            }
++
++            if activity_generation() != seen {
++                seen = activity_generation();
++                busy_until = Instant::now() + BUSY_FOR;
++            }
+ 
+             let mut service = Self::write();
+ 
+             // a poll that found nothing new redraws nothing
+-            if !service.update() {
++            if service.update() {
++                busy_until = Instant::now() + BUSY_FOR;
++            } else {
+                 service.quiet();
+             }
+         }
+@@ -98,6 +121,66 @@ pub trait Service: Send + Sync + Sized + 'static {
+     }
+ }
+ 
++// how long polling stays at full rate after the last sign of life
++const BUSY_FOR: Duration = Duration::from_secs(5);
++
++// the slowest a fast service polls while nothing is happening
++const IDLE_POLL: Duration = Duration::from_millis(200);
++
++/*
++ * bumped by every change that didn't come from a timed poll (input
++ * handlers, ipc, event-driven services), so idle pollers wake at once
++ */
++static ACTIVITY: (Mutex<u64>, Condvar) = (Mutex::new(0), Condvar::new());
++
++thread_local! {
++    // set on every service listener thread
++    pub(crate) static POLLING: Cell<bool> = const { Cell::new(false) };
++}
++
++/*
++ * a write counts as activity unless it came from a background listener:
++ * timed reads like cpu, ops or the clock change every few seconds and
++ * would keep every fast poller awake for good
++ */
++pub(crate) fn note_activity() {
++    if POLLING.with(Cell::get) {
++        return;
++    }
++
++    wake_pollers();
++}
++
++// for listeners whose events are user-visible activity (workspaces, audio)
++pub(crate) fn wake_pollers() {
++    let (generation, wake) = &ACTIVITY;
++
++    *generation.lock().unwrap_or_else(PoisonError::into_inner) += 1;
++
++    wake.notify_all();
++}
++
++pub(crate) fn activity_generation() -> u64 {
++    *ACTIVITY.0.lock().unwrap_or_else(PoisonError::into_inner)
++}
++
++// true when woken by activity, false when the timeout ran out
++pub(crate) fn wait_for_activity(timeout: Duration, seen: &mut u64) -> bool {
++    let (generation, wake) = &ACTIVITY;
++
++    let guard = generation.lock().unwrap_or_else(PoisonError::into_inner);
++
++    let (guard, _) = wake
++        .wait_timeout_while(guard, timeout, |g| *g == *seen)
++        .unwrap_or_else(PoisonError::into_inner);
++
++    let woken = *guard != *seen;
++
++    *seen = *guard;
++
++    woken
++}
++
+ #[cfg(test)]
+ mod tests {
+     use std::thread;
+diff --git a/src/services/audio.rs b/src/services/audio.rs
+index fa0e0c3..5f51d42 100644
+--- a/src/services/audio.rs
++++ b/src/services/audio.rs
+@@ -63,7 +63,14 @@ impl Service for Audio {
+ 
+             if !audio.update() {
+                 audio.quiet();
++
++                return;
+             }
++
++            drop(audio);
++
++            // the volume osd is drawn by a fast poller
++            crate::services::wake_pollers();
+         });
+     }
+ }
+diff --git a/src/services/network.rs b/src/services/network.rs
+index 8e0613e..b00ffa4 100644
+--- a/src/services/network.rs
++++ b/src/services/network.rs
+@@ -4,7 +4,8 @@ mod manager;
+ mod profile;
+ mod wifi;
+ 
+-use std::thread;
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::time::{Duration, Instant};
+ 
+ use crate::services::worker;
+ use crate::{Service, Value};
+@@ -32,12 +33,24 @@ pub struct Network {
+ }
+ 
+ /*
+- * polled, because the access point's strength
+- * changes all the time without a new connection
++ * polled, because the access point's strength changes all the time
++ * without a new connection. The full access point list costs
++ * networkmanager dozens of dbus calls (every ap, every saved profile),
++ * so it is only fetched while a window is actually showing it;
++ * otherwise the link, ssid and strength are checked every few seconds
+  */
++static WANTS_LIST: AtomicBool = AtomicBool::new(false);
++
++// with a list on screen, and without one
++const LISTING: Duration = Duration::from_secs(1);
++const IDLE: Duration = Duration::from_secs(5);
++
++// a list read this recently counts as still on screen
++const LIST_SHOWN_FOR: Duration = Duration::from_secs(30);
++
+ impl Service for Network {
+     fn new() -> Self {
+-        fetch()
++        fetch(true)
+     }
+ 
+     /*
+@@ -46,10 +59,33 @@ impl Service for Network {
+      * the windows aren't redrawn every second for no reason
+      */
+     fn listen() {
++        let mut seen = crate::services::activity_generation();
++        let mut listed_at: Option<Instant> = None;
++        let mut fetched = Instant::now();
++
+         loop {
+-            thread::sleep(Self::interval());
++            let listing = listed_at.is_some_and(|t| t.elapsed() < LIST_SHOWN_FOR);
++
++            // opening the wifi page is input, which wakes this at once
++            crate::services::wait_for_activity(if listing { LISTING } else { IDLE }, &mut seen);
++
++            // input wakes this often (every hover), but networkmanager is asked at most once a second
++            if let Some(rest) = LISTING.checked_sub(fetched.elapsed()) {
++                std::thread::sleep(rest);
++            }
+ 
+-            let fresh = fetch();
++            if WANTS_LIST.swap(false, Ordering::Relaxed) {
++                listed_at = Some(Instant::now());
++            }
++
++            let listing = listed_at.is_some_and(|t| t.elapsed() < LIST_SHOWN_FOR);
++
++            let mut fresh = fetch(listing);
++            fetched = Instant::now();
++
++            if !listing {
++                fresh.access_points = Self::read().access_points.clone();
++            }
+ 
+             if *Self::read() == fresh {
+                 continue;
+@@ -86,6 +122,8 @@ impl Network {
+     }
+ 
+     pub fn access_points(&self) -> &[AccessPoint] {
++        WANTS_LIST.store(true, Ordering::Relaxed);
++
+         &self.access_points
+     }
+ }
+@@ -160,7 +198,7 @@ fn ssid(bytes: &Value) -> String {
+ }
+ 
+ // asks networkmanager for everything shown, from scratch
+-fn fetch() -> Network {
++fn fetch(list: bool) -> Network {
+     // networks to join are listed even while offline
+     let mut network = Network {
+         wifi_enabled: manager::wifi_enabled(),
+@@ -168,7 +206,9 @@ fn fetch() -> Network {
+     };
+ 
+     if let Some(device) = wifi::device() {
+-        network.access_points = wifi::access_points(&device);
++        if list {
++            network.access_points = wifi::access_points(&device);
++        }
+         network.connecting = wifi::connecting(&device);
+     }
+ 
+diff --git a/src/services/store.rs b/src/services/store.rs
+index 5a10d7a..5128c24 100644
+--- a/src/services/store.rs
++++ b/src/services/store.rs
+@@ -75,6 +75,8 @@ const RESTART_DELAY: Duration = Duration::from_secs(5);
+  * pause instead of leaving the service frozen; one that returns is done
+  */
+ fn keep_listening<S: Service>() {
++    super::POLLING.with(|p| p.set(true));
++
+     while panic::catch_unwind(S::listen).is_err() {
+         eprintln!(
+             "amane: {} stopped, starting it again",
+diff --git a/src/services/workspaces.rs b/src/services/workspaces.rs
+index e55b440..68c3543 100644
+--- a/src/services/workspaces.rs
++++ b/src/services/workspaces.rs
+@@ -32,6 +32,11 @@ impl Service for Workspaces {
+             }
+ 
+             workspaces.list = list;
++
++            drop(workspaces);
++
++            // a window opening or a workspace switch moves the notch
++            crate::services::wake_pollers();
+         });
+     }
+ }
+diff --git a/src/services/write.rs b/src/services/write.rs
+index 4b60b2c..391c63d 100644
+--- a/src/services/write.rs
++++ b/src/services/write.rs
+@@ -47,5 +47,7 @@ impl<S: 'static> Drop for Write<S> {
+         }
+ 
+         changes::mark(TypeId::of::<S>());
++
++        super::note_activity();
+     }
+ }
+-- 
+2.56.1
+

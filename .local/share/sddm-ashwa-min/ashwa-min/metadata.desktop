@@ -1,0 +1,17 @@
+[SddmGreeterTheme]
+Name=Ashwa Min
+Description=A single hairline input on black. Nothing else.
+Author=stepanzubkov (where-is-my-sddm-theme); stripped locally
+Copyright=(c) 2023, stepanzubkov
+License=MIT
+Version=1.12.0
+MainScript=Main.qml
+ConfigFile=theme.conf
+TranslationsDirectory=translations
+Theme-Id=ashwa-min
+Theme-API=2.2
+# Required. SDDM picks the greeter binary from this: without it the daemon
+# launches the Qt5 /usr/bin/sddm-greeter, and Main.qml line 5
+# ("import Qt5Compat.GraphicalEffects", versionless and therefore Qt6-only)
+# fails with "import needs a version".
+QtVersion=6

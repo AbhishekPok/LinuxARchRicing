@@ -1,0 +1,22 @@
+[package]
+name = "amane-shell"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "amane-shell"
+path = '/home/abhishek/.config/amane/src/main.rs'
+
+[dependencies]
+amane = { path = '/home/abhishek/.cache/amane/library' }
+
+[profile.dev]
+debug = "line-tables-only"
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
+incremental = false
+
+[workspace]

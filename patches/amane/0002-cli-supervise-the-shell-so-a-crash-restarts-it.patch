@@ -1,0 +1,172 @@
+From 1d4d9185ce5c2edda3f60fb9683ade191b4c89dc Mon Sep 17 00:00:00 2001
+From: AbhishekPok <abhishekpokhrel001@gmail.com>
+Date: Thu, 12 Nov 2026 15:18:26 +0545
+Subject: [PATCH 2/4] cli: supervise the shell so a crash restarts it
+
+`amane run` now starts `amane supervise`, which runs the shell and starts it
+again after a crash (panic, abort, segfault). A clean exit or a stop signal
+(amane restart, pkill, logout) ends supervision, so restarts never double up.
+Gives up after 5 crashes in 2 minutes or when the Wayland session is gone,
+and notes each restart in the log. The in-shell watchdog still handles
+freezes; it could never catch a crash, as it dies with the shell.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ cli/src/main.rs |   2 +
+ cli/src/run.rs  | 111 ++++++++++++++++++++++++++++++++++++++++++++----
+ 2 files changed, 105 insertions(+), 8 deletions(-)
+
+diff --git a/cli/src/main.rs b/cli/src/main.rs
+index 3186961..51d860e 100644
+--- a/cli/src/main.rs
++++ b/cli/src/main.rs
+@@ -42,6 +42,8 @@ fn main() -> ExitCode {
+         ["compile", "--restart"] => compile::run(true),
+ 
+         ["run"] => run::run(),
++        // internal: started by `run`, keeps the shell alive across crashes
++        ["supervise"] => run::supervise(),
+ 
+         ["restart"] => restart::run(),
+ 
+diff --git a/cli/src/run.rs b/cli/src/run.rs
+index 209ae89..e54cb60 100644
+--- a/cli/src/run.rs
++++ b/cli/src/run.rs
+@@ -1,7 +1,11 @@
+-use std::fs::{self, File};
++use std::fs::{self, File, OpenOptions};
++use std::io::Write;
+ use std::os::unix::net::UnixStream;
+-use std::os::unix::process::CommandExt;
+-use std::process::{Command, ExitCode, Stdio};
++use std::os::unix::process::{CommandExt, ExitStatusExt};
++use std::path::PathBuf;
++use std::process::{Command, ExitCode, ExitStatus, Stdio};
++use std::thread;
++use std::time::{Duration, Instant};
+ 
+ use amane::ipc_socket;
+ 
+@@ -25,18 +29,21 @@ pub fn run() -> ExitCode {
+     }
+ 
+     /*
+-     * its own process group keeps ctrl+c and closing the terminal
+-     * away from the shell, and a closed terminal would make prints fail
++     * a small supervisor runs the shell and starts it again if it crashes;
++     * the in-shell watchdog only covers freezes, and dies with the shell.
++     * Its own process group keeps ctrl+c and a closed terminal away from both.
+      */
+-    let started = Command::new(&shell)
++    let me = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("amane"));
++    let started = Command::new(me)
++        .arg("supervise")
+         .process_group(0)
+         .stdin(Stdio::null())
+         .stdout(Stdio::null())
+-        .stderr(log())
++        .stderr(Stdio::null())
+         .spawn();
+ 
+     if let Err(error) = started {
+-        eprintln!("failed to run {}: {error}", shell.display());
++        eprintln!("failed to start the amane supervisor: {error}");
+ 
+         return ExitCode::FAILURE;
+     }
+@@ -59,3 +66,91 @@ fn log() -> Stdio {
+         Err(_) => Stdio::null(),
+     }
+ }
++
++// crashes this close together mean something is broken for good: stop retrying
++const CRASH_WINDOW: Duration = Duration::from_secs(120);
++const CRASH_LIMIT: usize = 5;
++const RESPAWN_DELAY: Duration = Duration::from_secs(1);
++
++/*
++ * runs the shell and waits on it. A clean exit or a stop signal (what
++ * `amane restart`, pkill and logout send) ends supervision; a crash (panic,
++ * abort, segfault) starts the shell again, unless it keeps crashing or the
++ * Wayland session is gone.
++ */
++pub fn supervise() -> ExitCode {
++    let shell = paths::shell();
++    let mut crashes: Vec<Instant> = Vec::new();
++
++    loop {
++        let child = Command::new(&shell)
++            .process_group(0)
++            .stdin(Stdio::null())
++            .stdout(Stdio::null())
++            .stderr(log())
++            .spawn();
++
++        let Ok(mut child) = child else {
++            return ExitCode::FAILURE;
++        };
++
++        let Ok(status) = child.wait() else {
++            return ExitCode::FAILURE;
++        };
++
++        if intentional(status) {
++            return ExitCode::SUCCESS;
++        }
++
++        let now = Instant::now();
++        crashes.retain(|t| now.duration_since(*t) < CRASH_WINDOW);
++        crashes.push(now);
++
++        if crashes.len() >= CRASH_LIMIT {
++            note(&format!(
++                "amane: crashed {} times in {}s, not restarting again ({status})",
++                crashes.len(),
++                CRASH_WINDOW.as_secs()
++            ));
++
++            return ExitCode::FAILURE;
++        }
++
++        thread::sleep(RESPAWN_DELAY);
++
++        // logged out, or someone already started another shell: nothing to do
++        if !wayland_alive() || UnixStream::connect(ipc_socket()).is_ok() {
++            return ExitCode::SUCCESS;
++        }
++
++        note(&format!("amane: shell exited unexpectedly ({status}), restarting"));
++    }
++}
++
++// a clean exit, or a signal someone sent on purpose
++fn intentional(status: ExitStatus) -> bool {
++    if status.success() {
++        return true;
++    }
++
++    // SIGHUP, SIGINT, SIGKILL, SIGTERM
++    matches!(status.signal(), Some(1 | 2 | 9 | 15))
++}
++
++fn wayland_alive() -> bool {
++    let (Some(runtime), Some(display)) = (
++        std::env::var_os("XDG_RUNTIME_DIR"),
++        std::env::var_os("WAYLAND_DISPLAY"),
++    ) else {
++        return false;
++    };
++
++    PathBuf::from(runtime).join(display).exists()
++}
++
++// appended to the new run's log, so the reason for a restart is kept
++fn note(message: &str) {
++    if let Ok(mut file) = OpenOptions::new().append(true).create(true).open(paths::log()) {
++        let _ = writeln!(file, "{message}");
++    }
++}
+-- 
+2.56.1
+

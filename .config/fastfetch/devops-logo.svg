@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600">
+  <!-- fastfetch logo: DevOps loop + CI/CD pipeline, in the Hyprland border
+       gradient (#00ff99 -> #00e5ff). Render with:
+       rsvg-convert -w 600 devops-logo.svg -o logo.png -->
+  <defs>
+    <linearGradient id="loop" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#00ff99"/>
+      <stop offset="1" stop-color="#00e5ff"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="9" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="4" markerHeight="4" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#eafff5"/>
+    </marker>
+  </defs>
+
+  <!-- Infinity loop (lemniscate), centred at 300,230 -->
+  <path id="inf" filter="url(#glow)" fill="none" stroke="url(#loop)" stroke-width="30" stroke-linecap="round"
+        d="M300,230
+           C250,140 90,140 90,230
+           C90,320 250,320 300,230
+           C350,140 510,140 510,230
+           C510,320 350,320 300,230 Z"/>
+  <!-- Direction arrows riding the loop -->
+  <path fill="none" stroke="#eafff5" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"
+        d="M150,170 C120,182 104,200 102,222"/>
+  <path fill="none" stroke="#eafff5" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"
+        d="M450,290 C480,278 496,260 498,238"/>
+
+  <g font-family="JetBrainsMono Nerd Font, JetBrains Mono, DejaVu Sans Mono, monospace" font-weight="800"
+     text-anchor="middle" filter="url(#soft)">
+    <text x="190" y="246" font-size="46" fill="#00ff99">DEV</text>
+    <text x="410" y="246" font-size="46" fill="#00e5ff">OPS</text>
+  </g>
+
+  <!-- CI/CD pipeline: plan build test release deploy operate monitor -->
+  <g filter="url(#soft)">
+    <line x1="80" y1="420" x2="520" y2="420" stroke="#1f5c39" stroke-width="8" stroke-linecap="round"/>
+    <line x1="80" y1="420" x2="447" y2="420" stroke="url(#loop)" stroke-width="8" stroke-linecap="round"/>
+    <circle cx="80"  cy="420" r="16" fill="#00ff99"/>
+    <circle cx="153" cy="420" r="16" fill="#00ff99"/>
+    <circle cx="227" cy="420" r="16" fill="#00f5b0"/>
+    <circle cx="300" cy="420" r="16" fill="#00f0c4"/>
+    <circle cx="373" cy="420" r="16" fill="#00ebd8"/>
+    <circle cx="447" cy="420" r="22" fill="#00e5ff" stroke="#eafff5" stroke-width="5"/>
+    <circle cx="520" cy="420" r="16" fill="#0a0a0a" stroke="#1f5c39" stroke-width="5"/>
+  </g>
+
+  <!-- Prompt -->
+  <g font-family="JetBrainsMono Nerd Font, JetBrains Mono, DejaVu Sans Mono, monospace" font-size="38" font-weight="700">
+    <text x="62" y="520" fill="#00ff99">$</text>
+    <text x="100" y="520" fill="#7bff9e">git push</text>
+    <text x="300" y="520" fill="#2a8a52">→</text>
+    <text x="345" y="520" fill="#00e5ff">prod</text>
+    <rect x="452" y="490" width="22" height="36" fill="#00ff99"/>
+  </g>
+</svg>

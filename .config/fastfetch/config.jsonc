@@ -1,0 +1,135 @@
+// Matrix look: bright green readout on a dim green frame.
+//   keys #50fa7b · title #2dff00 · values #7bff9e · tagline #39ff6a
+//   separator #2a8a52 · borders #1f5c39
+// Backups: config.jsonc.bak.vivid-green · config.jsonc.bak.pastel-green
+//          config.jsonc.bak.2026-09-23-0729 (original rainbow)
+{
+  "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+  // Braille-art terminal window (devops.txt, drawn from terminal-logo.svg). $1 green -> $5..$8 -> $2 cyan, $3 white, $4 dim.
+  // The image logo is still logo.png: restore config.jsonc.bak.2026-10-15-image-logo.
+  "logo": {
+    "type": "file",
+    "source": "~/.config/fastfetch/devops.txt",
+    "color": {
+      "1": "38;2;0;255;153",
+      "2": "38;2;0;229;255",
+      "3": "38;2;234;255;245",
+      "4": "38;2;42;138;82",
+      "5": "38;2;0;250;175",
+      "6": "38;2;0;245;196",
+      "7": "38;2;0;240;216",
+      "8": "38;2;0;235;236"
+    },
+    "padding": {
+      "top": 1,
+      "left": 0,
+      "right": 2
+    }
+  },
+  "display": {
+    "separator": " : ",
+    "key": {
+      "width": 0
+    },
+    "color": {
+      "keys": "#50fa7b",
+      "title": "#2dff00",
+      "output": "#7bff9e",
+      "separator": "#2a8a52"
+    },
+    "percent": {
+      "color": {
+        "green": "#50fa7b",
+        "yellow": "#f9e2af",
+        "red": "#f38ba8"
+      }
+    }
+  },
+  "modules": [
+    {
+      "type": "custom",
+      "format": "     󱇐 : Crafted my way.",
+      "outputColor": "#39ff6a"
+    },
+    {
+      "type": "custom",
+      "format": "   ╭───────────────────────────────────────╮",
+      "outputColor": "#1f5c39"
+    },
+    {
+      "type": "os",
+      "key": "     󰣇 OS      "
+    },
+    {
+      "type": "host",
+      "key": "      Device  ",
+      "format": "{2}"
+    },
+    {
+      "type": "kernel",
+      "key": "      Kernel  "
+    },
+    {
+      "type": "packages",
+      "key": "     󰏖 Packages"
+    },
+    {
+      "type": "terminal",
+      "key": "     󰞷 Terminal"
+    },
+    {
+      "type": "wm",
+      "key": "     󱂬 WM      "
+    },
+    {
+      "type": "custom",
+      "format": "   ╰───────────────────────────────────────╯",
+      "outputColor": "#1f5c39"
+    },
+    "break",
+    {
+      "type": "title",
+      "key": "     󰮚",
+      "format": "{1} @ {2}"
+    },
+    {
+      "type": "custom",
+      "format": "   ╭───────────────────────────────────────╮",
+      "outputColor": "#1f5c39"
+    },
+    {
+      "type": "cpu",
+      "key": "     󰻠 CPU     ",
+      "format": "{1}"
+    },
+    {
+      "type": "gpu",
+      "key": "     󰢮 GPU     ",
+      "format": "{2}"
+    },
+    {
+      "type": "memory",
+      "key": "     󰍛 Memory  "
+    },
+    {
+      "type": "display",
+      "key": "     󰹑 Display ",
+      "format": "{width}x{height} @ {refresh-rate} Hz"
+    },
+    {
+      "type": "command",
+      "key": "      OS Age  ",
+      "text": "birthd=$(stat -c %W /); echo $(( ( $(date +%s) - birthd ) / 86400 )) days"
+    },
+    {
+      "type": "uptime",
+      "key": "     󰅐 Uptime  "
+    },
+    {
+      "type": "custom",
+      "format": "   ╰───────────────────────────────────────╯",
+      "outputColor": "#1f5c39"
+    },
+    "break"
+  ]
+}

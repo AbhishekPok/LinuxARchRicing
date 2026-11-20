@@ -1,24 +1,41 @@
 #!/usr/bin/env bash
-
+# Copy this rice into $HOME. Any file it would replace is moved to
+# ~/.rice-backup-<time>/ first, at the same relative path.
 set -euo pipefail
 
-DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MODULES_DIR="$DOTFILES_DIR/modules"
+src=$(cd "$(dirname "$0")" && pwd)
+backup="$HOME/.rice-backup-$(date +%Y%m%d-%H%M%S)"
 
-source "$MODULES_DIR/00-utils.sh"
+paths=(
+    .config/amane
+    .config/hypr
+    .config/theme-manager/themes
+    .config/kitty
+    .config/fontconfig
+    .config/fastfetch
+    .config/gtk-3.0/settings.ini
+    .config/gtk-4.0/settings.ini
+    .local/bin/track
+    .local/bin/chrome-theme-sync
+    .local/bin/kbb-scrolllock.sh
+    .local/share/sddm-ashwa-min
+    Pictures/Wallpapers
+)
 
-section "Abhi DevOps Hyprland Ricing Installer"
+for p in "${paths[@]}"; do
+    while IFS= read -r -d '' f; do
+        rel=${f#"$src"/}
+        dest="$HOME/$rel"
+        if [[ -e $dest ]] && ! cmp -s "$f" "$dest"; then
+            mkdir -p "$backup/$(dirname "$rel")"
+            mv "$dest" "$backup/$rel"
+        fi
+        mkdir -p "$(dirname "$dest")"
+        cp -a "$f" "$dest"
+    done < <(find "$src/$p" -type f -print0)
+done
 
-run_module "01-dirs.sh"
-run_module "02-theme.sh"
-run_module "03-hypr.sh"
-run_module "04-waybar.sh"
-run_module "05-wlogout.sh"
-run_module "06-kitty-wofi-swaync.sh"
-run_module "07-gtk.sh"
-run_module "08-finalize.sh"
-
-section "Installation complete"
-
-echo "Ricing applied successfully."
-echo "Backups saved in: $BACKUP_DIR"
+if [[ -d $backup ]]; then
+    echo "Replaced files were moved to $backup"
+fi
+echo "Done. Next: build amane, run theme-set, see README.md."

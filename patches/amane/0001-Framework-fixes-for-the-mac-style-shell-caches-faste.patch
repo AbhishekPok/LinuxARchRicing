@@ -1,0 +1,1110 @@
+From 10d4989e2e53fb5eaf3c5fe32fbb218457ce6c7d Mon Sep 17 00:00:00 2001
+From: AbhishekPok <abhishekpokhrel001@gmail.com>
+Date: Thu, 12 Nov 2026 15:04:43 +0545
+Subject: [PATCH 1/4] Framework fixes for the mac-style shell: caches, faster
+ lookups, audio, lock
+
+- font: cache per-(font, letter) metrics, per-font metrics and glyph
+  outline bounds; text measuring re-parsed font tables on every redraw
+- fasthash: FxHash-style hasher for the service store, per-frame read
+  sets and font caches; per-thread service lookup cache in store::find
+- cli: build the user's shell crate at opt-level 2 (it was unoptimised)
+- audio: an unreadable or zero-channel level keeps the last value instead
+  of reporting 0%, which popped false volume HUDs
+- lock: create lock surfaces right after requesting the lock; keep a lost
+  output's pending lock surface alive; Lock::active()
+- input: map clip rects through the target transform (scrolled settings)
+- bluetooth: unblock rfkill and retry Powered
+- run: write the shell's stderr to ~/.cache/amane/amane.log
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Cargo.lock                    |  1 +
+ Cargo.toml                    |  1 +
+ cli/src/paths.rs              |  5 ++
+ cli/src/project.rs            |  6 ++-
+ cli/src/run.rs                | 21 +++++++-
+ src/changes.rs                | 11 ++---
+ src/fasthash.rs               | 93 +++++++++++++++++++++++++++++++++++
+ src/frame.rs                  |  5 +-
+ src/graphics/font.rs          | 62 +++++++++++++++++++++--
+ src/graphics/renderer/text.rs |  4 +-
+ src/input/target.rs           | 26 +++++++++-
+ src/lib.rs                    |  1 +
+ src/services.rs               | 42 +++++++++++++---
+ src/services/audio.rs         | 24 +++++----
+ src/services/audio/pulse.rs   | 18 ++++---
+ src/services/bluetooth.rs     | 71 ++++++++++++++++++++++++++
+ src/services/lock.rs          | 15 ++++++
+ src/services/pam/tests.rs     |  6 +--
+ src/services/store.rs         | 25 +++++++++-
+ src/services/write.rs         |  3 +-
+ src/wayland/lock.rs           | 24 ++++++---
+ src/wayland/output.rs         | 46 +++++++++++++++--
+ src/wayland/surface.rs        |  3 +-
+ src/wayland/windows.rs        |  3 +-
+ src/widgets/text/lines.rs     | 31 +++++++++++-
+ 25 files changed, 485 insertions(+), 62 deletions(-)
+ create mode 100644 src/fasthash.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 25bfcec..031f864 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -22,6 +22,7 @@ dependencies = [
+  "fontconfig",
+  "inotify",
+  "libpulse-binding",
++ "parking_lot",
+  "png",
+  "resvg",
+  "serde_json",
+diff --git a/Cargo.toml b/Cargo.toml
+index 3b537f1..6d90f79 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -9,6 +9,7 @@ name = "amane"
+ path = "src/lib.rs"
+ 
+ [dependencies]
++parking_lot = "0.12"
+ smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop", "xkbcommon"] }
+ vello = "0.11"
+ # only for glsl shaders, vello already brings wgpu and this turns on its glsl reader
+diff --git a/cli/src/paths.rs b/cli/src/paths.rs
+index 2c0aa5d..fd23841 100644
+--- a/cli/src/paths.rs
++++ b/cli/src/paths.rs
+@@ -42,6 +42,11 @@ pub fn shell() -> PathBuf {
+     cache().join("amane-shell")
+ }
+ 
++// what the running shell prints, the run before it is kept beside it as amane.log.1
++pub fn log() -> PathBuf {
++    cache().join("amane.log")
++}
++
+ // the xdg variable wins when set, otherwise the usual folder inside home
+ fn base(variable: &str, fallback: &str) -> PathBuf {
+     if let Some(folder) = env::var_os(variable) {
+diff --git a/cli/src/project.rs b/cli/src/project.rs
+index d1ac283..b4e8992 100644
+--- a/cli/src/project.rs
++++ b/cli/src/project.rs
+@@ -120,8 +120,9 @@ fn hash_folder(root: &Path, folder: &Path, hasher: &mut DefaultHasher) {
+ 
+ /*
+  * the dev build (the only one) optimises amane and its dependencies, drawing unoptimised
+- * is too slow for smooth animation; only the user's own crate stays
+- * unoptimised, so a save still rebuilds quickly after the first build.
++ * is too slow for smooth animation. The user's own crate is optimised too
++ * (opt-level 2): its view code runs on every animation frame, and an
++ * unoptimised shell measurably cost CPU, while a rebuild still takes seconds.
+  * dependencies carry no debug info and the user's crate only line tables,
+  * which keeps the binary small and the link on every save short.
+  * dependencies skip incremental, they only rebuild when amane updates.
+@@ -143,6 +144,7 @@ amane = {{ path = '{library}' }}
+ 
+ [profile.dev]
+ debug = \"line-tables-only\"
++opt-level = 2
+ 
+ [profile.dev.package.\"*\"]
+ opt-level = 3
+diff --git a/cli/src/run.rs b/cli/src/run.rs
+index a049fbc..209ae89 100644
+--- a/cli/src/run.rs
++++ b/cli/src/run.rs
+@@ -1,3 +1,4 @@
++use std::fs::{self, File};
+ use std::os::unix::net::UnixStream;
+ use std::os::unix::process::CommandExt;
+ use std::process::{Command, ExitCode, Stdio};
+@@ -16,7 +17,7 @@ pub fn run() -> ExitCode {
+         return ExitCode::FAILURE;
+     }
+ 
+-    // the shell's own "already running" error goes to /dev/null, so it is checked here
++    // the shell's own "already running" error would only reach the log, so it is checked here
+     if UnixStream::connect(ipc_socket()).is_ok() {
+         eprintln!("amane is already running, use `amane restart` to restart it");
+ 
+@@ -31,7 +32,7 @@ pub fn run() -> ExitCode {
+         .process_group(0)
+         .stdin(Stdio::null())
+         .stdout(Stdio::null())
+-        .stderr(Stdio::null())
++        .stderr(log())
+         .spawn();
+ 
+     if let Err(error) = started {
+@@ -42,3 +43,19 @@ pub fn run() -> ExitCode {
+ 
+     ExitCode::SUCCESS
+ }
++
++/*
++ * the shell's errors go to a file, since a crash otherwise leaves no reason
++ * behind; the previous run's log is kept, as the one that crashed is usually
++ * the one before the restart
++ */
++fn log() -> Stdio {
++    let log = paths::log();
++
++    let _ = fs::rename(&log, log.with_extension("log.1"));
++
++    match File::create(&log) {
++        Ok(file) => Stdio::from(file),
++        Err(_) => Stdio::null(),
++    }
++}
+diff --git a/src/changes.rs b/src/changes.rs
+index 6a634d4..6ea0aa6 100644
+--- a/src/changes.rs
++++ b/src/changes.rs
+@@ -1,6 +1,5 @@
+ use std::any::TypeId;
+ use std::cell::RefCell;
+-use std::collections::HashSet;
+ use std::sync::{Mutex, OnceLock, PoisonError};
+ 
+ use crate::timing;
+@@ -18,13 +17,13 @@ static CHANGED: Mutex<Changes> = Mutex::new(Changes {
+ });
+ 
+ struct Changes {
+-    services: Option<HashSet<TypeId>>,
++    services: Option<crate::fasthash::FxHashSet<TypeId>>,
+     everything: bool,
+ }
+ 
+ // what the window being drawn right now has read
+ thread_local! {
+-    static READ: RefCell<HashSet<TypeId>> = RefCell::new(HashSet::new());
++    static READ: RefCell<crate::fasthash::FxHashSet<TypeId>> = RefCell::new(crate::fasthash::FxHashSet::default());
+ }
+ 
+ pub fn set_waker(wake: impl Fn() + Send + Sync + 'static) {
+@@ -53,7 +52,7 @@ pub fn mark(service: TypeId) {
+ 
+     changes
+         .services
+-        .get_or_insert_with(HashSet::new)
++        .get_or_insert_with(crate::fasthash::FxHashSet::default)
+         .insert(service);
+ 
+     drop(changes);
+@@ -62,7 +61,7 @@ pub fn mark(service: TypeId) {
+ }
+ 
+ // none means every window should draw
+-pub fn take() -> Option<HashSet<TypeId>> {
++pub fn take() -> Option<crate::fasthash::FxHashSet<TypeId>> {
+     let mut changes = CHANGED.lock().unwrap_or_else(PoisonError::into_inner);
+ 
+     let services = changes.services.take().unwrap_or_default();
+@@ -79,7 +78,7 @@ pub fn note_read(service: TypeId) {
+ }
+ 
+ // what was read since the last call, which starts a fresh list
+-pub fn take_read() -> HashSet<TypeId> {
++pub fn take_read() -> crate::fasthash::FxHashSet<TypeId> {
+     READ.take()
+ }
+ 
+diff --git a/src/fasthash.rs b/src/fasthash.rs
+new file mode 100644
+index 0000000..f6d28de
+--- /dev/null
++++ b/src/fasthash.rs
+@@ -0,0 +1,93 @@
++//! A tiny FxHash-style hasher for the framework's hot internal maps (service
++//! lookups, the per-frame "what was read" set, font caches). The keys are
++//! TypeIds and small integer tuples made by the framework itself, so the
++//! DoS resistance of the default SipHash buys nothing here, and SipHash was
++//! a visible part of every frame.
++use std::collections::{HashMap, HashSet};
++use std::hash::{BuildHasherDefault, Hasher};
++
++#[derive(Default, Clone, Copy)]
++pub struct FxHasher {
++    hash: u64,
++}
++
++const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
++
++impl FxHasher {
++    #[inline]
++    fn add(&mut self, word: u64) {
++        self.hash = (self.hash.rotate_left(5) ^ word).wrapping_mul(SEED);
++    }
++}
++
++impl Hasher for FxHasher {
++    #[inline]
++    fn write(&mut self, bytes: &[u8]) {
++        let mut chunks = bytes.chunks_exact(8);
++        for chunk in &mut chunks {
++            self.add(u64::from_le_bytes(chunk.try_into().unwrap()));
++        }
++        let rest = chunks.remainder();
++        if !rest.is_empty() {
++            let mut last = [0u8; 8];
++            last[..rest.len()].copy_from_slice(rest);
++            self.add(u64::from_le_bytes(last));
++        }
++    }
++    #[inline]
++    fn write_u8(&mut self, n: u8) {
++        self.add(u64::from(n));
++    }
++    #[inline]
++    fn write_u16(&mut self, n: u16) {
++        self.add(u64::from(n));
++    }
++    #[inline]
++    fn write_u32(&mut self, n: u32) {
++        self.add(u64::from(n));
++    }
++    #[inline]
++    fn write_u64(&mut self, n: u64) {
++        self.add(n);
++    }
++    #[inline]
++    fn write_u128(&mut self, n: u128) {
++        self.add(n as u64);
++        self.add((n >> 64) as u64);
++    }
++    #[inline]
++    fn write_usize(&mut self, n: usize) {
++        self.add(n as u64);
++    }
++    #[inline]
++    fn finish(&self) -> u64 {
++        self.hash
++    }
++}
++
++pub type FxBuild = BuildHasherDefault<FxHasher>;
++pub type FxHashMap<K, V> = HashMap<K, V, FxBuild>;
++pub type FxHashSet<K> = HashSet<K, FxBuild>;
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::any::TypeId;
++
++    #[test]
++    fn distinct_keys_stay_distinct() {
++        let mut set: FxHashSet<TypeId> = FxHashSet::default();
++        set.insert(TypeId::of::<u8>());
++        set.insert(TypeId::of::<u16>());
++        set.insert(TypeId::of::<String>());
++        assert_eq!(set.len(), 3);
++        assert!(set.contains(&TypeId::of::<u16>()));
++
++        let mut map: FxHashMap<(u64, char), u32> = FxHashMap::default();
++        for (i, c) in "abcdefghij".chars().enumerate() {
++            map.insert((7, c), i as u32);
++        }
++        assert_eq!(map.get(&(7, 'e')), Some(&4));
++        assert_eq!(map.len(), 10);
++    }
++}
+diff --git a/src/frame.rs b/src/frame.rs
+index 92dfc9c..0e7bb14 100644
+--- a/src/frame.rs
++++ b/src/frame.rs
+@@ -1,5 +1,4 @@
+ use std::any::TypeId;
+-use std::collections::HashSet;
+ 
+ use crate::Widget;
+ use crate::animation::moving;
+@@ -14,7 +13,7 @@ pub struct Frame {
+     pub targets: Vec<Target>,
+ 
+     // services read while drawing, on top of the ones the view read
+-    pub reads: HashSet<TypeId>,
++    pub reads: crate::fasthash::FxHashSet<TypeId>,
+ 
+     // something the view or a widget drew has not arrived yet, so another frame is needed
+     pub moving: bool,
+@@ -29,7 +28,7 @@ pub fn run_view<T>(
+     width: u32,
+     height: u32,
+     scale_factor: ScaleFactor,
+-) -> (T, HashSet<TypeId>) {
++) -> (T, crate::fasthash::FxHashSet<TypeId>) {
+     // anything read or set moving before belongs to another window
+     changes::take_read();
+ 
+diff --git a/src/graphics/font.rs b/src/graphics/font.rs
+index eafcf43..0568ae7 100644
+--- a/src/graphics/font.rs
++++ b/src/graphics/font.rs
+@@ -166,14 +166,53 @@ pub struct MeasuredLetter {
+     pub advance: f32,
+ }
+ 
++/*
++ * Measuring a letter means a cmap lookup plus parsing the font's head/hhea/
++ * hmtx tables, and text is measured on every view build, so the answer is
++ * kept per (font, letter): font units only, the size is applied after.
++ * Fonts and their coords never change once loaded, so this never goes stale.
++ */
++type LetterKey = (u64, char);
++type LetterInfo = (FontRef<'static>, u16, f32, f32);
++
++thread_local! {
++    static LETTERS: RefCell<crate::fasthash::FxHashMap<LetterKey, LetterInfo>> =
++        RefCell::new(crate::fasthash::FxHashMap::default());
++    static METRICS: RefCell<crate::fasthash::FxHashMap<u64, swash::Metrics>> =
++        RefCell::new(crate::fasthash::FxHashMap::default());
++}
++
+ pub fn measure_letter(font: FontRef<'static>, letter: char, size: f32) -> MeasuredLetter {
+-    let (font, id) = with_letter(font, letter);
++    let key = (font.key.value(), letter);
++
++    let cached = LETTERS.with_borrow(|letters| letters.get(&key).copied());
++
++    let (font, id, units_per_em, advance) = match cached {
++        Some(info) => info,
++        None => {
++            let (found, id) = with_letter(font, letter);
++
++            let info = (
++                found,
++                id,
++                f32::from(metrics(found).units_per_em),
++                found.glyph_metrics(coords(found)).advance_width(id),
++            );
++
++            LETTERS.with_borrow_mut(|letters| {
++                // a runaway set of letters (pasted text in a search box) stays bounded
++                if letters.len() > 20_000 {
++                    letters.clear();
++                }
+ 
+-    let units_per_em = font.metrics(coords(font)).units_per_em;
++                letters.insert(key, info);
++            });
+ 
+-    let units = size / f32::from(units_per_em);
++            info
++        }
++    };
+ 
+-    let advance = font.glyph_metrics(coords(font)).advance_width(id);
++    let units = size / units_per_em;
+ 
+     MeasuredLetter {
+         font,
+@@ -183,6 +222,21 @@ pub fn measure_letter(font: FontRef<'static>, letter: char, size: f32) -> Measur
+     }
+ }
+ 
++// the font's own metrics (ascent, descent, units per em...), parsed once per font
++pub fn metrics(font: FontRef<'static>) -> swash::Metrics {
++    let key = font.key.value();
++
++    if let Some(found) = METRICS.with_borrow(|all| all.get(&key).copied()) {
++        return found;
++    }
++
++    let found = font.metrics(coords(font));
++
++    METRICS.with_borrow_mut(|all| all.insert(key, found));
++
++    found
++}
++
+ fn fallback(letter: char, weight: u16) -> Option<FontRef<'static>> {
+     let key = (letter, weight);
+ 
+diff --git a/src/graphics/renderer/text.rs b/src/graphics/renderer/text.rs
+index 6ab5c8c..b946b79 100644
+--- a/src/graphics/renderer/text.rs
++++ b/src/graphics/renderer/text.rs
+@@ -44,7 +44,7 @@ impl Renderer {
+         color: Color,
+         area: Area,
+     ) {
+-        let ascent = font.metrics(font::coords(font)).scale(pixel_size).ascent;
++        let ascent = font::metrics(font).scale(pixel_size).ascent;
+ 
+         let start = self.transform.map(area.x, area.y);
+ 
+@@ -79,7 +79,7 @@ impl Renderer {
+         color: Color,
+         area: Area,
+     ) {
+-        let ascent = font.metrics(font::coords(font)).scale(size).ascent;
++        let ascent = font::metrics(font).scale(size).ascent;
+ 
+         let baseline = area.y + ascent;
+ 
+diff --git a/src/input/target.rs b/src/input/target.rs
+index 7b13fed..4e002c0 100644
+--- a/src/input/target.rs
++++ b/src/input/target.rs
+@@ -69,6 +69,30 @@ impl Target {
+  */
+ pub fn clip(targets: &mut [Target], area: Area) {
+     for target in targets {
+-        target.area = target.area.intersect(area);
++        /*
++         * the clip is in the clipping widget's space, a target moved inside it
++         * (a page scrolled with translate, say) has its own, so the clip is
++         * brought into the target's space first; otherwise rows scrolled into
++         * view stay dead and rows scrolled out keep taking clicks
++         */
++        let local = local_area(&target.inverse, area);
++
++        target.area = target.area.intersect(local);
+     }
+ }
++
++// the smallest area in the target's own space that covers `area`
++fn local_area(inverse: &Transform, area: Area) -> Area {
++    let right = area.x + area.width;
++    let bottom = area.y + area.height;
++
++    let corners = [(area.x, area.y), (right, area.y), (area.x, bottom), (right, bottom)]
++        .map(|(x, y)| inverse.map(x, y));
++
++    let left = corners.iter().map(|c| c.0).fold(f32::INFINITY, f32::min);
++    let top = corners.iter().map(|c| c.1).fold(f32::INFINITY, f32::min);
++    let right = corners.iter().map(|c| c.0).fold(f32::NEG_INFINITY, f32::max);
++    let bottom = corners.iter().map(|c| c.1).fold(f32::NEG_INFINITY, f32::max);
++
++    Area::new(left, top, right - left, bottom - top)
++}
+diff --git a/src/lib.rs b/src/lib.rs
+index 04b348a..a3a0eb2 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -3,6 +3,7 @@ mod allocator;
+ mod animation;
+ mod app;
+ mod changes;
++mod fasthash;
+ mod compositor;
+ mod dbus;
+ mod files;
+diff --git a/src/services.rs b/src/services.rs
+index 425af84..e7dc56e 100644
+--- a/src/services.rs
++++ b/src/services.rs
+@@ -18,7 +18,7 @@ mod workspaces;
+ mod write;
+ 
+ use std::any::TypeId;
+-use std::sync::{PoisonError, RwLockReadGuard};
++use parking_lot::RwLockReadGuard;
+ use std::thread;
+ use std::time::Duration;
+ 
+@@ -76,9 +76,12 @@ pub trait Service: Send + Sync + Sized + 'static {
+         // remembered, so a later change redraws only the windows that read it
+         changes::note_read(TypeId::of::<Self>());
+ 
+-        store::find::<Self>()
+-            .read()
+-            .unwrap_or_else(PoisonError::into_inner)
++        /*
++         * recursive, because a view can read a service it already holds through
++         * a helper, and a plain read waits behind any queued writer: with
++         * listen() writing on every poll that froze the shell for good
++         */
++        store::find::<Self>().read_recursive()
+     }
+ 
+     /*
+@@ -86,9 +89,7 @@ pub trait Service: Send + Sync + Sized + 'static {
+      * service is still held, so this would wait forever
+      */
+     fn write() -> Write<Self> {
+-        let guard = store::find::<Self>()
+-            .write()
+-            .unwrap_or_else(PoisonError::into_inner);
++        let guard = store::find::<Self>().write();
+ 
+         Write {
+             guard,
+@@ -126,4 +127,31 @@ mod tests {
+ 
+         assert_eq!(Counter::read().0, 0);
+     }
++
++    #[derive(Default)]
++    struct Nested(u32);
++
++    impl Service for Nested {
++        fn new() -> Self {
++            Self::default()
++        }
++
++        fn listen() {}
++    }
++
++    // the freeze: a view holding a read reads again while a listener waits to write
++    #[test]
++    fn nested_read_passes_a_queued_writer() {
++        let held = Nested::read();
++        let writer = thread::spawn(|| Nested::write().0 = 1);
++
++        thread::sleep(std::time::Duration::from_millis(100));
++
++        assert_eq!(Nested::read().0, 0);
++
++        drop(held);
++        writer.join().unwrap();
++
++        assert_eq!(Nested::read().0, 1);
++    }
+ }
+diff --git a/src/services/audio.rs b/src/services/audio.rs
+index db174d6..fa0e0c3 100644
+--- a/src/services/audio.rs
++++ b/src/services/audio.rs
+@@ -36,14 +36,17 @@ impl Service for Audio {
+             self.microphone_muted,
+         );
+ 
+-        let output = pulse::read(Device::Output);
+-        let input = pulse::read(Device::Input);
+-
+-        self.volume = output.volume;
+-        self.muted = output.muted;
+-
+-        self.microphone_volume = input.volume;
+-        self.microphone_muted = input.muted;
++        // an unreadable level keeps the last one: reporting 0% here made the
++        // shell show a volume change that never happened
++        if let Some(output) = pulse::read(Device::Output) {
++            self.volume = output.volume;
++            self.muted = output.muted;
++        }
++
++        if let Some(input) = pulse::read(Device::Input) {
++            self.microphone_volume = input.volume;
++            self.microphone_muted = input.muted;
++        }
+ 
+         (
+             self.volume,
+@@ -102,7 +105,10 @@ impl Audio {
+ }
+ 
+ fn toggle(device: Device) {
+-    let level = pulse::read(device);
++    // nothing to flip when the server can't report the current state
++    let Some(level) = pulse::read(device) else {
++        return;
++    };
+ 
+     pulse::set_muted(device, !level.muted);
+ }
+diff --git a/src/services/audio/pulse.rs b/src/services/audio/pulse.rs
+index 24ce227..08c9f3b 100644
+--- a/src/services/audio/pulse.rs
++++ b/src/services/audio/pulse.rs
+@@ -72,16 +72,22 @@ fn with_connection<T: Default>(work: impl FnOnce(&mut Connection) -> T) -> T {
+     })
+ }
+ 
+-pub fn read(device: Device) -> Level {
++// none when the server can't say right now (starting up, the default device
++// switching): callers keep what they had instead of seeing a fake 0%
++pub fn read(device: Device) -> Option<Level> {
+     with_connection(|connection| {
+-        let Some(levels) = connection.levels(device) else {
+-            return Level::default();
+-        };
++        let levels = connection.levels(device)?;
+ 
+-        Level {
++        // a device caught mid-switch can report no channels, which averages
++        // to 0%: that is not a level, so it is treated like no answer
++        if levels.volumes.len() == 0 {
++            return None;
++        }
++
++        Some(Level {
+             volume: percent(levels.volumes.avg()),
+             muted: levels.muted,
+-        }
++        })
+     })
+ }
+ 
+diff --git a/src/services/bluetooth.rs b/src/services/bluetooth.rs
+index 93efb10..e3830f1 100644
+--- a/src/services/bluetooth.rs
++++ b/src/services/bluetooth.rs
+@@ -1,5 +1,7 @@
+ mod device;
+ 
++use std::fs::OpenOptions;
++use std::io::{self, Write};
+ use std::mem;
+ use std::thread;
+ use std::time::Duration;
+@@ -14,6 +16,12 @@ const ADAPTER: &str = "org.bluez.Adapter1";
+ const DEVICE: &str = "org.bluez.Device1";
+ const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
+ 
++const RFKILL_TYPE_BLUETOOTH: u8 = 2;
++const RFKILL_OP_CHANGE_ALL: u8 = 3;
++
++const POWER_ON_ATTEMPTS: u32 = 12;
++const POWER_ON_WAIT: Duration = Duration::from_millis(250);
++
+ #[derive(Default, PartialEq)]
+ pub struct Bluetooth {
+     // none when the machine has no bluetooth or bluez isn't running
+@@ -24,6 +32,9 @@ pub struct Bluetooth {
+     scanning: bool,
+ 
+     devices: Vec<BluetoothDevice>,
++
++    // the last power on gave up with the adapter still off
++    power_failed: bool,
+ }
+ 
+ /*
+@@ -47,6 +58,8 @@ impl Service for Bluetooth {
+         // read from scratch and compared at the end, the device list is rebuilt every poll
+         let before = mem::take(self);
+ 
++        self.power_failed = before.power_failed;
++
+         let objects = Bus::system().call(BLUEZ, "/", OBJECT_MANAGER, "GetManagedObjects", &[]);
+ 
+         let Value::Map(objects) = objects else {
+@@ -61,6 +74,7 @@ impl Service for Bluetooth {
+                 self.adapter = Some(path.clone());
+ 
+                 self.powered = adapter.get("Powered").bool();
++                self.power_failed &= !self.powered;
+                 self.scanning = adapter.get("Discovering").bool();
+             }
+ 
+@@ -98,7 +112,17 @@ impl Bluetooth {
+         &self.devices
+     }
+ 
++    pub fn power_failed(&self) -> bool {
++        self.power_failed
++    }
++
+     pub fn set_powered(powered: bool) {
++        if powered {
++            power_on();
++
++            return;
++        }
++
+         worker::run(move || {
+             let Some(adapter) = adapter() else {
+                 return;
+@@ -147,6 +171,53 @@ fn adapter() -> Option<String> {
+     Bluetooth::read().adapter.clone()
+ }
+ 
++/*
++ * bluez refuses to power an adapter rfkill has blocked, so the block goes first.
++ * the adapter takes a moment to come back after that, hence the retries, and they
++ * get their own thread so the control calls on the worker aren't held up
++ */
++fn power_on() {
++    let Some(adapter) = adapter() else {
++        return;
++    };
++
++    thread::spawn(move || {
++        Bluetooth::write().power_failed = false;
++
++        if let Err(error) = unblock() {
++            eprintln!("bluetooth: can't clear the rfkill block: {error}");
++        }
++
++        for _ in 0..POWER_ON_ATTEMPTS {
++            let value = Argument::from(true);
++
++            Bus::system().set_property(BLUEZ, &adapter, ADAPTER, "Powered", value);
++
++            thread::sleep(POWER_ON_WAIT);
++
++            let mut bluetooth = Bluetooth::write();
++
++            bluetooth.update();
++
++            if bluetooth.powered {
++                return;
++            }
++        }
++
++        Bluetooth::write().power_failed = true;
++    });
++}
++
++// one struct rfkill_event: every bluetooth radio, soft block off. a hard block stays
++fn unblock() -> io::Result<()> {
++    let event = [0, 0, 0, 0, RFKILL_TYPE_BLUETOOTH, RFKILL_OP_CHANGE_ALL, 0, 0];
++
++    OpenOptions::new()
++        .write(true)
++        .open("/dev/rfkill")?
++        .write_all(&event)
++}
++
+ fn adapter_call(method: &'static str, arguments: &[Argument]) {
+     let Some(adapter) = adapter() else {
+         return;
+diff --git a/src/services/lock.rs b/src/services/lock.rs
+index a5baded..5f4a9ef 100644
+--- a/src/services/lock.rs
++++ b/src/services/lock.rs
+@@ -8,6 +8,9 @@ use crate::{PamConfig, PamError, PamResult, Service};
+ // set by Lock::start, taken by the event loop when it wakes
+ static REQUESTED: AtomicBool = AtomicBool::new(false);
+ 
++// the session is locked, or the lock was asked for and the compositor is answering
++static ACTIVE: AtomicBool = AtomicBool::new(false);
++
+ // the pam service file in /etc/pam.d that checks the password
+ const PAM_SERVICE: &str = "login";
+ 
+@@ -57,6 +60,18 @@ impl Lock {
+         changes::mark_all();
+     }
+ 
++    /*
++     * true from the moment the lock is requested from the compositor until it
++     * ends, so a lock screen's own services can stop working once unlocked
++     */
++    pub fn active() -> bool {
++        ACTIVE.load(Ordering::Relaxed)
++    }
++
++    pub(crate) fn set_active(active: bool) {
++        ACTIVE.store(active, Ordering::Relaxed);
++    }
++
+     pub(crate) fn take_request() -> bool {
+         REQUESTED.swap(false, Ordering::Relaxed)
+     }
+diff --git a/src/services/pam/tests.rs b/src/services/pam/tests.rs
+index 5349758..58cff78 100644
+--- a/src/services/pam/tests.rs
++++ b/src/services/pam/tests.rs
+@@ -353,7 +353,7 @@ fn a_view_can_read_lock_while_authentication_waits_for_pam() {
+     let readable = loop {
+         if crate::services::store::find::<Lock>()
+             .try_read()
+-            .is_ok_and(|lock| lock.checking())
++            .is_some_and(|lock| lock.checking())
+         {
+             break true;
+         }
+@@ -383,13 +383,13 @@ fn cancelling_before_pam_publication_cannot_unlock() {
+     wait_for(|| {
+         crate::services::store::find::<Lock>()
+             .try_read()
+-            .is_ok_and(|lock| lock.checking())
++            .is_some_and(|lock| lock.checking())
+     });
+     let cancellation = thread::spawn(Lock::abort);
+     wait_for(|| {
+         crate::services::store::find::<Lock>()
+             .try_read()
+-            .is_ok_and(|lock| !lock.checking())
++            .is_some_and(|lock| !lock.checking())
+     });
+     drop(pam);
+     authentication
+diff --git a/src/services/store.rs b/src/services/store.rs
+index 0f4e770..5a10d7a 100644
+--- a/src/services/store.rs
++++ b/src/services/store.rs
+@@ -1,18 +1,41 @@
+ use std::any::{self, Any, TypeId};
+ use std::collections::HashMap;
+ use std::panic;
+-use std::sync::{LazyLock, Mutex, PoisonError, RwLock};
++use std::sync::{LazyLock, Mutex, PoisonError};
+ use std::thread;
+ use std::time::Duration;
+ 
++use parking_lot::RwLock;
++
+ use crate::Service;
+ 
+ static SERVICES: LazyLock<Mutex<HashMap<TypeId, &'static (dyn Any + Send + Sync)>>> =
+     LazyLock::new(|| Mutex::new(HashMap::new()));
+ 
++type Found = &'static (dyn Any + Send + Sync);
++
++thread_local! {
++    // every service read goes through here, many times per frame: answer
++    // from a per-thread copy instead of locking the global store each time
++    static LOCAL: std::cell::RefCell<crate::fasthash::FxHashMap<TypeId, Found>> =
++        std::cell::RefCell::new(crate::fasthash::FxHashMap::default());
++}
++
+ pub fn find<S: Service>() -> &'static RwLock<S> {
+     let id = TypeId::of::<S>();
+ 
++    if let Some(service) = LOCAL.with_borrow(|local| local.get(&id).copied()) {
++        return service.downcast_ref().expect("failed to find service");
++    }
++
++    let service = find_shared::<S>(id);
++
++    LOCAL.with_borrow_mut(|local| local.insert(id, service as Found));
++
++    service
++}
++
++fn find_shared<S: Service>(id: TypeId) -> &'static RwLock<S> {
+     if let Some(service) = SERVICES
+         .lock()
+         .unwrap_or_else(PoisonError::into_inner)
+diff --git a/src/services/write.rs b/src/services/write.rs
+index 5ae2b0c..4b60b2c 100644
+--- a/src/services/write.rs
++++ b/src/services/write.rs
+@@ -1,6 +1,7 @@
+ use std::any::{self, TypeId};
+ use std::ops::{Deref, DerefMut};
+-use std::sync::RwLockWriteGuard;
++
++use parking_lot::RwLockWriteGuard;
+ 
+ use crate::changes;
+ use crate::timing;
+diff --git a/src/wayland/lock.rs b/src/wayland/lock.rs
+index fd08752..036ae69 100644
+--- a/src/wayland/lock.rs
++++ b/src/wayland/lock.rs
+@@ -17,11 +17,6 @@ impl WaylandState {
+             return;
+         };
+ 
+-        // monitors described before the lock is granted get their screens in locked()
+-        if !session_lock.is_locked() {
+-            return;
+-        }
+-
+         let already_open = self.windows.iter().any(|window| {
+             matches!(window.role, Role::Lock(_)) && window.output.as_ref() == Some(&output)
+         });
+@@ -69,8 +64,21 @@ impl WaylandState {
+             return;
+         };
+ 
+-        // the lock screens open once the compositor answers that the session is locked
+         self.session_lock = Some(session_lock);
++
++        Lock::set_active(true);
++
++        /*
++         * the lock screens open right away, not on `locked`: hyprland only
++         * sends `locked` once every monitor has a lock surface (so nothing of
++         * the desktop flashes), and shows its "lockscreen app died" screen if
++         * none arrive, so waiting for `locked` first meant both sides waited
++         */
++        let outputs: Vec<WlOutput> = self.output.outputs().collect();
++
++        for output in outputs {
++            self.open_lock(output);
++        }
+     }
+ 
+     // runs on every wake, since that is when a finished pam check shows up
+@@ -87,6 +95,8 @@ impl WaylandState {
+ 
+         self.session_lock = None;
+ 
++        Lock::set_active(false);
++
+         self.close_lock_screens();
+ 
+         /*
+@@ -123,6 +133,8 @@ impl SessionLockHandler for WaylandState {
+ 
+         self.session_lock = None;
+ 
++        Lock::set_active(false);
++
+         self.close_lock_screens();
+     }
+ 
+diff --git a/src/wayland/output.rs b/src/wayland/output.rs
+index 8ef113e..5955127 100644
+--- a/src/wayland/output.rs
++++ b/src/wayland/output.rs
+@@ -7,7 +7,10 @@ use wayland_client::{
+ use crate::Monitor;
+ use crate::scale::ScaleFactor;
+ 
+-use super::{WaylandState, surface::View};
++use super::{
++    WaylandState,
++    surface::{OpenWindow, Role, View},
++};
+ 
+ impl OutputHandler for WaylandState {
+     fn output_state(&mut self) -> &mut OutputState {
+@@ -56,11 +59,48 @@ impl OutputHandler for WaylandState {
+ 
+     // dropping a window destroys its layer surface
+     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: WlOutput) {
+-        self.windows
+-            .retain(|window| window.output.as_ref() != Some(&output));
++        let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.windows)
++            .into_iter()
++            .partition(|window| window.output.as_ref() == Some(&output));
++
++        self.windows = kept;
++
++        for window in gone {
++            close_on_lost_output(window);
++        }
+     }
+ }
+ 
++/*
++ * hyprland destroys a lock surface on its own when the output goes away
++ * before the lock is granted (a monitor unplugged as the lid closes), without
++ * telling the client, so destroying it again is an "invalid object" that
++ * kills the shell and leaves the session locked with no lock screen. Once
++ * locked it keeps the surface instead, and nothing says which case this is,
++ * so a lock surface on a lost output is never destroyed: the gpu still lets
++ * go of it, and the compositor drops what is left with the lock
++ */
++fn close_on_lost_output(window: OpenWindow) {
++    let OpenWindow {
++        gpu,
++        fractional,
++        role,
++        ..
++    } = window;
++
++    drop(gpu);
++
++    let Role::Lock(lock_surface) = role else {
++        drop(fractional);
++
++        return;
++    };
++
++    // the viewport and scale objects belong to the surface, so they stay with it
++    std::mem::forget(fractional);
++    std::mem::forget(lock_surface);
++}
++
+ pub fn describe(info: &OutputInfo, scale_factor: ScaleFactor) -> Monitor {
+     let name = info.name.clone().unwrap_or_default();
+ 
+diff --git a/src/wayland/surface.rs b/src/wayland/surface.rs
+index b975c1b..27394ea 100644
+--- a/src/wayland/surface.rs
++++ b/src/wayland/surface.rs
+@@ -1,5 +1,4 @@
+ use std::any::TypeId;
+-use std::collections::HashSet;
+ use std::time::Instant;
+ 
+ use smithay_client_toolkit::{
+@@ -45,7 +44,7 @@ pub struct OpenWindow {
+     pub last_frame: Option<Instant>,
+ 
+     // the services the last view read, a change to any of them draws the window again
+-    pub reads: HashSet<TypeId>,
++    pub reads: crate::fasthash::FxHashSet<TypeId>,
+ 
+     // both come from the last drawn view, so input matches what is on screen
+     pub pointer: Pointer,
+diff --git a/src/wayland/windows.rs b/src/wayland/windows.rs
+index 19f32e9..bddc0d9 100644
+--- a/src/wayland/windows.rs
++++ b/src/wayland/windows.rs
+@@ -1,4 +1,3 @@
+-use std::collections::HashSet;
+ 
+ use wayland_client::{
+     Proxy,
+@@ -80,7 +79,7 @@ impl WaylandState {
+ 
+             frame_requested: false,
+             last_frame: None,
+-            reads: HashSet::new(),
++            reads: crate::fasthash::FxHashSet::default(),
+ 
+             pointer: Pointer::default(),
+             on_key: None,
+diff --git a/src/widgets/text/lines.rs b/src/widgets/text/lines.rs
+index bcb4ba6..915bbe8 100644
+--- a/src/widgets/text/lines.rs
++++ b/src/widgets/text/lines.rs
+@@ -23,7 +23,7 @@ pub fn measure(content: &str, font: FontRef<'static>, size: f32) -> f32 {
+ 
+ // the height of one line, from the top of the tallest letter to the bottom of the lowest
+ pub fn height(font: FontRef<'static>, size: f32) -> f32 {
+-    let metrics = font.metrics(font::coords(font)).scale(size);
++    let metrics = font::metrics(font).scale(size);
+ 
+     // swash counts descent downward from the baseline, so both add up
+     metrics.ascent + metrics.descent
+@@ -31,7 +31,7 @@ pub fn height(font: FontRef<'static>, size: f32) -> f32 {
+ 
+ // the distance from the top of one line to the top of the next
+ pub fn spacing(font: FontRef<'static>, size: f32) -> f32 {
+-    let gap = font.metrics(font::coords(font)).scale(size).leading;
++    let gap = font::metrics(font).scale(size).leading;
+ 
+     height(font, size) + gap
+ }
+@@ -151,8 +151,35 @@ pub fn ink(content: &str, font: FontRef<'static>, size: f32) -> (f32, f32) {
+     (left, right)
+ }
+ 
++thread_local! {
++    // outline boxes in font units, per (font, glyph): loading an outline is
++    // the most expensive part of measuring tight text such as icons
++    static BOUNDS: std::cell::RefCell<crate::fasthash::FxHashMap<(u64, u16), Option<Bounds>>> =
++        std::cell::RefCell::new(crate::fasthash::FxHashMap::default());
++}
++
+ // the box around a letter's outline, in the font's own units; none for a space
+ fn bounds(font: FontRef<'static>, id: u16) -> Option<Bounds> {
++    let key = (font.key.value(), id);
++
++    if let Some(found) = BOUNDS.with_borrow(|all| all.get(&key).copied()) {
++        return found;
++    }
++
++    let found = outline_bounds(font, id);
++
++    BOUNDS.with_borrow_mut(|all| {
++        if all.len() > 20_000 {
++            all.clear();
++        }
++
++        all.insert(key, found);
++    });
++
++    found
++}
++
++fn outline_bounds(font: FontRef<'static>, id: u16) -> Option<Bounds> {
+     font::with_context(|context| {
+         let mut scaler = context
+             .builder(font)
+-- 
+2.56.1
+

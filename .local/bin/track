@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# track: run a long command and show it in amane's notch (Live Activity).
+#
+#   track terraform apply -target=module.vpc
+#   track -l "deploy payments" helm upgrade payments ./chart
+#
+# The notch shows a ring, the label and the elapsed time while it runs, then a
+# check or a cross with the duration. Output, exit code and Ctrl+C behave
+# exactly as if the command ran on its own; when amane isn't running the
+# command still runs, just without the notch.
+set -o pipefail
+
+label=""
+if [[ ${1:-} == -l ]]; then
+    label=$2
+    shift 2
+fi
+if [[ $# -eq 0 ]]; then
+    echo "usage: track [-l LABEL] COMMAND [ARGS...]" >&2
+    exit 2
+fi
+# default label: the program and its first word that isn't a flag
+if [[ -z $label ]]; then
+    label=${1##*/}
+    for arg in "${@:2}"; do
+        [[ $arg == -* ]] && continue
+        label+=" $arg"
+        break
+    done
+fi
+
+amane=~/.cargo/bin/amane
+id=$("$amane" ipc call activity start "$label" 2>/dev/null)
+[[ $id =~ ^[0-9]+$ ]] || id=""
+
+finish() {
+    local status=$1
+    if [[ -n $id ]]; then
+        "$amane" ipc call activity done "$id" "$([[ $status -eq 0 ]] && echo ok || echo fail)" \
+            > /dev/null 2>&1
+    fi
+}
+# Ctrl+C / kill still mark the activity as failed instead of leaving it spinning
+trap 'finish 130; exit 130' INT TERM
+
+"$@"
+status=$?
+finish "$status"
+exit "$status"
