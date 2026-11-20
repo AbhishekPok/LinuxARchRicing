@@ -9,3 +9,6 @@ target/
 .config/hypr/.monitor-profiles
 # account picture for the SDDM theme: add your own
 .local/share/sddm-ashwa-min/ashwa-min/face.png
+.local/share/sddm-ashwa-mac/ashwa-mac/face.png
+# the login picture is chosen per machine: install.sh <image>
+.local/share/sddm-ashwa-mac/ashwa-mac/background.jpg

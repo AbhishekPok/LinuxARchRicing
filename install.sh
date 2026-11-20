@@ -19,6 +19,7 @@ paths=(
     .local/bin/chrome-theme-sync
     .local/bin/kbb-scrolllock.sh
     .local/share/sddm-ashwa-min
+    .local/share/sddm-ashwa-mac
     Pictures/Wallpapers
 )
 

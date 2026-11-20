@@ -712,10 +712,43 @@ fn home() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
+/// The wallpaper on screen right now: hyprlax's image layer, which every
+/// wallpaper change goes through (picker, rotator, theme, per-workspace
+/// wallpapers). `lock-bg` is the fallback when hyprlax isn't answering.
+/// backdrop() runs on every redraw, so the lookup (a subprocess) is cached for
+/// a second: one call per lock, still fresh for the next one.
 fn wallpaper() -> Option<std::path::PathBuf> {
-    std::fs::canonicalize(home().join(".config/hypr/lock-bg"))
-        .ok()
-        .filter(|p| p.is_file())
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, Option<std::path::PathBuf>)>> = Mutex::new(None);
+
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, path)) = cache.as_ref() {
+        if at.elapsed() < Duration::from_secs(1) {
+            return path.clone();
+        }
+    }
+    let path = on_screen_wallpaper().or_else(|| {
+        std::fs::canonicalize(home().join(".config/hypr/lock-bg"))
+            .ok()
+            .filter(|p| p.is_file())
+    });
+    *cache = Some((Instant::now(), path.clone()));
+    path
+}
+
+fn on_screen_wallpaper() -> Option<std::path::PathBuf> {
+    let out = std::process::Command::new("hyprlax")
+        .args(["ctl", "list", "--json"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8(out.stdout).ok()?;
+    // first layer's "path":"..." (paths here never contain a quote)
+    let start = text.find("\"path\":\"")? + "\"path\":\"".len();
+    let end = start + text[start..].find('"')?;
+    let path = std::path::PathBuf::from(text[start..end].replace("\\/", "/"));
+    path.is_file().then_some(path)
 }
 
 /// `~/.face`, the usual account picture; the initial is drawn without one.
